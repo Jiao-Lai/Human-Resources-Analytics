@@ -1,0 +1,245 @@
+---
+title: "HR_analytics"
+author: "Jiao Lai"
+date: "4/4/2021"
+output:
+  html_document:
+    df_print: paged
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+Steps to analyze HR data:
+1. Identify groups to compare.
+2. Calculate summary statistics for each group.
+3. Compare the differences statistically or visually.
+
+Case overview:
+1. Identifying the best recruiting source.
+Quality of hire:
+  retention, or how long the employee stays
+  manager's satisfaction with the hire
+  job performance
+  amount of time it takes to become fully productive
+2. What is driving low employee engagement?
+3. Are new hires getting paid too much?
+4. Are performance ratings being given consistently?
+5. Improving employee safety with data.
+
+Load data from website.
+```{r}
+library(readr)
+library(broom)
+survey <- read_csv(url("https://assets.datacamp.com/production/course_5977/datasets/survey_data.csv"))
+recruitment <- read_csv(url("https://assets.datacamp.com/production/course_5977/datasets/recruitment_data.csv"))
+pay <- read_csv(url("https://assets.datacamp.com/production/course_5977/datasets/fair_pay_data.csv"))
+performance <- read_csv(url("https://assets.datacamp.com/production/course_5977/datasets/performance_data.csv"))
+hr_1 <- read_csv(url("https://assets.datacamp.com/production/course_5977/datasets/hr_data.csv"))
+accident <- read_csv(url("https://assets.datacamp.com/production/course_5977/datasets/accident_data.csv"))
+hr_2 <- read_csv(url("https://assets.datacamp.com/production/course_5977/datasets/hr_data_2.csv"))
+survey_2 <- read_csv(url("https://assets.datacamp.com/production/course_5977/datasets/survey_data_2.csv"))
+```
+The dataset 'recruitment' contains sources of recruiting, and three measurements of quality of hires.
+For this dataset, we are interested in whether quality of hires are different in terms of recruiting source.
+
+```{r}
+head(recruitment)
+names(recruitment)
+summary(recruitment)
+colSums(is.na(recruitment))
+levels(recruitment$recruiting_source)
+library(dplyr)
+library(tidyr)
+recruitment_summary <- recruitment %>%
+  group_by(recruiting_source) %>%
+  summarize(
+    count = n(),
+    avg_attrition = mean(attrition),
+    avg_rating = mean(performance_rating),
+    avg_sales = mean(sales_quota_pct),
+  ) %>%
+  gather( "measurement", 'value', -recruiting_source)
+library(ggplot2)
+recruitment_summary %>%
+  ggplot(aes(x = recruiting_source, y = value, fill = measurement))+
+  geom_col(position = 'dodge') +
+  facet_wrap(~measurement, scales = 'free')
+```
+The dataset 'survey' contains info for employees: salary, department, engagement, vacation days taken.
+```{r}
+head(survey)
+summary(survey)
+unique(survey$department)
+survey_summary <- survey %>%
+  mutate(disengaged = ifelse(engagement %in% c(1, 2), 1, 0)) %>%
+  group_by(department) %>%
+  summarize(
+    count = n(),
+    avg_engagement = mean(engagement),
+    avg_salary = mean(salary),
+    avg_vacation_days_taken = mean(vacation_days_taken),
+    avg_disengaged = mean(disengaged)
+  )
+survey_summary %>%
+  gather("measurement", "value", -department) %>%
+  ggplot(aes(x = measurement, y = value, fill = department)) +
+  geom_col(position = 'dodge') +
+  facet_wrap(~measurement, scales = 'free')
+
+```
+To test if two groups are statistically significant different from each other, we can use t-test if the variable we are comparing is continuous, and chi-square test if the variable we are comparing is categorical.
+```{r}
+survey <- survey %>%
+  mutate(in_sales = ifelse(department == 'Sales', "Sales", "Other"),
+         disengaged = ifelse(engagement %in% c(1,2), 1, 0)) 
+## check if Sales and other department have different 'disengaged' and 'vacation_days_taken'
+chisq.test(survey$in_sales, survey$disengaged)
+## check if the two groups have equal variance 
+var.test(vacation_days_taken ~ in_sales, survey)
+## check if the two groups are normal
+with(survey, shapiro.test(vacation_days_taken[in_sales == 'Sales']))
+with(survey, shapiro.test(vacation_days_taken[in_sales == 'Other']))
+t.test(vacation_days_taken ~ in_sales, survey, var.equal = FALSE)
+ 
+```
+
+The table 'pay' contains employee_id, department, salary, whether they are new_hire, and their job_level.
+```{r}
+names(pay)
+head(pay)
+summary(pay)
+pay %>%
+  group_by(new_hire) %>%
+  summarize(
+    count = n(),
+    avg_salary = mean(salary))
+var.test(salary ~ new_hire, pay)
+with(pay, shapiro.test(salary[new_hire == 'Yes']))
+with(pay, shapiro.test(salary[new_hire == 'No']))
+t.test(salary ~ new_hire, pay, var.equal = TRUE) 
+```
+Check for omitted variables.
+```{r}
+pay %>%
+  ggplot(aes(x = new_hire, fill = job_level)) +
+  geom_bar(position = 'fill')
+pay %>%
+  group_by(new_hire, job_level) %>%
+  summarize(avg_salary = mean(salary)) %>%
+  ggplot(aes(x = new_hire, y = avg_salary, fill = job_level)) +
+  geom_col(position = 'dodge') +
+  facet_wrap(~job_level, scales = 'free')
+
+```
+Look at 'hourly' job_level only.
+```{r}
+hourly <- pay %>% filter(job_level == 'Hourly') 
+var.test(salary ~ new_hire, hourly)
+tidy(t.test(salary ~ new_hire, hourly, var.equal = TRUE))
+
+```
+Use linear regression to control confounding variables.
+```{r}
+## Simple linear regression.
+## Simple linear regression gives the same result with t test of equal variances.
+lm.simple <- lm(salary ~ new_hire, pay) %>% tidy()
+## Add job_level.
+lm.mul <- lm(salary ~ new_hire + job_level, pay) %>% tidy()
+
+```
+Analyze HR data from different resources.
+```{r}
+summary(hr_1)
+summary(performance)
+joined <- hr_1 %>%
+  left_join(performance, by = 'employee_id')
+summary(joined)
+joined %>%
+  group_by(gender) %>%
+  summarize(avg_rating = mean(rating, na.rm = TRUE))
+```
+Compare performance by gender.
+```{r}
+joined <- joined %>%
+  mutate(high_performer = ifelse(rating >= 4, 1, 0))
+## Compare the difference in performance by gender
+chisq.test(joined$high_performer, joined$gender)
+chisq.test(joined$rating, joined$gender)
+## visualize the distribution of performance by gender
+joined %>%
+  ggplot(aes(x = gender, fill = factor(high_performer)))+
+  geom_bar(position = 'fill')
+joined %>%
+  ggplot(aes(x = gender, fill = factor(rating)))+
+  geom_bar(position = 'fill')
+joined %>%
+  ggplot(aes(x = gender, fill = factor(job_level)))+
+  geom_bar(position = 'fill')
+## check if job_level distribution is different by gender
+chisq.test(joined$job_level, joined$gender)
+## visualize the difference in performance by gender and job_level
+joined %>%
+  ggplot(aes(x = gender, fill = factor(high_performer)))+
+  geom_bar(position = 'fill') +
+  facet_wrap(~job_level, scales = 'free')
+```
+Use logistic regression to predict binary variable.
+Find variables affecting an employee's chance to be high_performer.
+
+```{r}
+glm.simple <- glm(high_performer ~ gender, joined, family = 'binomial') %>% tidy()
+glm.mul <- glm(high_performer ~ gender + job_level, joined, family = 'binomial')  %>% tidy()
+```
+
+Analyze workforce safety.
+```{r}
+head(hr_2)
+head(accident)
+acc_joined <- hr_2 %>%
+  left_join(accident, by = c('employee_id', 'year')) %>%
+  mutate(had_accident = ifelse(is.na(accident_type), 0, 1))
+## Accident rate by year.
+acc_joined %>%
+  group_by(year) %>%
+  summarize(avg_accident = mean(had_accident))
+chisq.test(acc_joined$had_accident, acc_joined$year)
+acc_joined %>%
+  group_by(year, location) %>%
+  summarize(avg_accident = mean(had_accident)) %>%
+  ggplot(aes(x = factor(year), y = avg_accident, fill = location)) +
+  geom_col(position = 'dodge') +
+  facet_wrap(~location, scales = 'free')
+```
+Looked at subset of data with interest: Southfield.
+
+```{r}
+southfield <- acc_joined %>%
+  filter(location == 'Southfield') 
+southfield %>%
+  group_by(year) %>%
+  summarize(avg_overtime_hours_worked = mean(overtime_hours)) %>%
+  ggplot(aes(x = year, y = avg_overtime_hours_worked)) +
+  geom_col()
+t.test(overtime_hours ~ year, southfield)
+```
+Use more data to check for sources of variation.
+```{r}
+acc_survey <- southfield %>% left_join(survey_2, by = c('employee_id', 'year')) %>%
+  mutate(disengaged = ifelse(engagement <= 2, 1, 0),
+         year = as.factor(year))
+acc_survey %>%
+  ggplot(aes(x = year, fill = factor(disengaged))) +
+  geom_bar(position = 'fill')
+chisq.test(acc_survey$disengaged, acc_survey$year)
+## check accident trend in other fields.
+other <- acc_joined %>% filter(location != 'Southfield') 
+other %>%
+  group_by(year) %>%
+  summarize(avg_accident = mean(had_accident))
+chisq.test(other$had_accident, other$year)
+```
+Use regression to control other variables.
+```{r}
+glm(had_accident ~ year + disengaged, data = acc_survey, family = 'binomial') %>% tidy()
+
+```
